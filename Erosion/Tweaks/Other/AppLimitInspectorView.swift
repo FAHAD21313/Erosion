@@ -22,8 +22,6 @@ struct AppLimitInspectorView: View {
                 Text("The worse_query probe temporarily recreates the cache directory in this app’s own App Group.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             } header: {
                 HeaderLabel("About", symbol: "info.circle")
             }
