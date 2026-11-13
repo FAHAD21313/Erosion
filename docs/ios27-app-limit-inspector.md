@@ -8,8 +8,9 @@ free Apple Developer account's three-installed-app limit.
 
 1. Build and sideload this fork with a working App Group entitlement, as required by Erosion.
 2. Open **Tweaks → System → App Limit Inspector (iOS 27)**.
-3. Select **Run Read-Only Scan**. Bundle discovery via `pathleak` may take time.
-4. Share the displayed report manually if you want to compare results across iOS versions.
+3. Select **Run Read-Only Scan** for the standard permission test. Bundle discovery via `pathleak` may take time.
+4. Optionally select **Identify Daemon Containers (extended)**. This probes up to 35 individual daemon data containers and reads only container metadata (owner UID and `com.apple.containermanager.identifier`), reporting totals and Apple identifiers whose names appear installation-related. This is an opt-in extended scan; it can trigger repeated App Group cache swaps.
+5. Share the displayed report manually if you want to compare results across iOS versions.
 
 The report contains OS/build metadata, fixed filesystem paths, and anonymized
 sample numbers. It intentionally omits App Group IDs, container UUIDs, app names,
@@ -90,3 +91,20 @@ parent paths was not issued. The App Group and exploit do work for at least
 some *individual* data containers. v3 extends the same individual-container
 test to InternalDaemon children; this can check daemon-container reachability,
 not installer service control or a three-app bypass.
+
+## iOS 27.0.1 third report (2026-11-13, build 24A446)
+
+The third on-device report was consistent with v2: **13** App Bundle
+candidates remained inaccessible even after both `worse_query` query modes;
+the app-data root could not open, but **two individually sampled app-data
+containers** did. It also found **30** InternalDaemon candidate paths and
+successfully issued sandbox tokens for **all three sampled individual daemon
+data containers**. This confirms selective access to daemon *data*, not the
+`installd` process, its XPC interfaces, or protected app bundle files.
+
+The v4 opt-in classification checks daemon-container identifiers as a
+privacy-preserving metadata-only next step. It intentionally does **not**
+open or parse installation databases, request service actions, remove xattrs,
+or change code-signing state. A matching identifier cannot establish a
+bypass: there is no verified route from daemon data access to changing
+Apple's free-profile installation accounting.
