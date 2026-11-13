@@ -19,7 +19,7 @@ bundle identifiers, provisioning profile contents, and account credentials.
 
 - Whether an existing App Group container is available to Erosion.
 - Whether app bundle, app data, and internal daemon directory roots open before and after requesting sandbox extensions with both standard and alternate `worse_query` flags. The alternate mode is tried only if the first request does not grant usable directory access.
-- Whether app bundle and app data containers can be discovered by directory listing or the project's existing `pathleak` enumeration routine. It probes up to three bundle containers and two app-data containers individually, because a parent may be inaccessible even if its children are not.
+- Whether app bundle, app data, and internal-daemon containers can be discovered by directory listing or the project's existing `pathleak` enumeration routine. It probes up to three bundle containers, two app-data containers, and three daemon containers individually, because a parent may be inaccessible even if its children are not.
 - For up to three sample app bundles, whether a sandbox token is issued,
   whether the container can actually be opened, the visible POSIX owner,
   whether `embedded.mobileprovision` is visible, and the *presence or
@@ -78,3 +78,15 @@ for all root and sampled bundle requests using standard flags. None of the
 app bundles opened. This **does not** establish whether an alternate flag or
 an individually targeted app-data container will work; the updated inspector
 now tests both variants. Do not claim that finding paths grants access.
+
+## iOS 27.0.1 second report (2026-11-13, build 24A446)
+
+A second on-device report tested both query flag sets. It discovered 13
+application bundles and 317 app-data candidates. Both sampled app-data
+children acquired tokens with standard flags and their directories opened.
+The three tested application-bundle containers still returned `-6` for both
+flag sets, and their directories remained inaccessible. A token for the
+parent paths was not issued. The App Group and exploit do work for at least
+some *individual* data containers. v3 extends the same individual-container
+test to InternalDaemon children; this can check daemon-container reachability,
+not installer service control or a three-app bypass.
