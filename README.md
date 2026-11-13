@@ -26,6 +26,9 @@ At the time of writing (2026-11-08), worse_query has not been patched in any new
 
 Expect that to change in the short future.
 
+### Research: iOS 27 App Limit Inspector
+This fork includes a read-only diagnostic screen under **Tweaks → System → App Limit Inspector (iOS 27)**. It checks sandbox and installation-bundle metadata access; it does **not** bypass the three-app limit. See [the research protocol](docs/ios27-app-limit-inspector.md) before testing.
+
 ### FAQ
 1. **Why can't I use MobileGestalt tweaks on iOS 26?** The exploit that Erosion relies on, `worse_query`, is *not* capable of writing to MobileGestalt on iOS 26, therefore those tweaks do not work.
 2. **Why aren't PosterBoard wallpapers showing up?** Sometimes, you'll have to reset Collections, which can be done in-app. If the wallpaper still doesn't show up after that, then it's likely a wallpaper-based issue rather than something that Erosion can solve.

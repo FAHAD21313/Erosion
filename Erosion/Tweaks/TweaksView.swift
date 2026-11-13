@@ -25,6 +25,7 @@ struct TweaksView: View {
                     }
                     NavigationLink("Config Tweaks", destination: ConfigView())
                     NavigationLink("File Operations", destination: OperationsView())
+                    NavigationLink("App Limit Inspector (iOS 27)", destination: AppLimitInspectorView())
                 } header: {
                     HeaderLabel("System", symbol: "gear")
                 }
