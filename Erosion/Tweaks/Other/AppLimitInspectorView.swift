@@ -80,11 +80,11 @@ private enum AppLimitInspector {
 
     static func generateReport() -> String {
         var lines: [String] = [
-            "Erosion / App Limit Inspector (read-only)",
+            "Erosion / App Limit Inspector v2 (read-only)",
             "Date: \(ISO8601DateFormatter().string(from: Date()))",
             "OS: \(ProcessInfo.processInfo.operatingSystemVersionString)",
             "Build: \(buildNumber())",
-            "Test: iOS 27 sandbox and installed-bundle metadata",
+            "Test: iOS 27 sandbox extensions, standard and alternate flags",
             ""
         ]
 
@@ -92,39 +92,50 @@ private enum AppLimitInspector {
         let groupAvailable = FileManager.default.containerURL(
             forSecurityApplicationGroupIdentifier: appGroup
         ) != nil
-        lines.append("App Group entitlement/container: \(groupAvailable ? "available" : "unavailable")")
-        lines.append("No Apple ID, provisioning profile or app contents are exported.")
+        lines.append("App Group container: \(groupAvailable ? "available" : "unavailable")")
+        lines.append("Report excludes app identifiers, container UUIDs and provisioning contents.")
+        lines.append("Sandbox grants do not change POSIX ownership.")
         lines.append("")
+
+        guard groupAvailable else {
+            lines.append("App Group unavailable: skip sandbox token probes.")
+            lines.append("Check signing and the App Group entitlement before further testing.")
+            return lines.joined(separator: "\n")
+        }
 
         for (name, path) in [
             ("App bundle root", appBundleRoot),
-            ("App data root (comparison)", appDataRoot),
-            ("Internal daemon root (comparison)", daemonRoot)
+            ("App data root", appDataRoot),
+            ("Internal daemon root", daemonRoot)
         ] {
             lines.append("[\(name)]")
             lines.append("Path: \(path)")
-            let before = openStatus(path)
-            lines.append("Directory open BEFORE grant: \(before)")
-            let handle = worse_query(path, appGroup, false, false)
-            lines.append("worse_query result: \(handle >= 0 ? "token acquired" : "error \(handle)")")
-            lines.append("Directory open AFTER grant: \(openStatus(path))")
+            let result = probe(path: path, group: appGroup)
+            lines.append(contentsOf: result.lines)
 
             if path == appBundleRoot {
-                lines.append(contentsOf: inspectBundleSamples(root: path))
-            }
-
-            if handle >= 0 {
-                worse_query_release(handle)
+                lines.append(contentsOf: inspectSamples(root: path,
+                                                        group: appGroup,
+                                                        maximum: 3,
+                                                        inspectBundle: true))
+            } else if path == appDataRoot {
+                // The parent often cannot open, even when individual containers can.
+                lines.append(contentsOf: inspectSamples(root: path,
+                                                        group: appGroup,
+                                                        maximum: 2,
+                                                        inspectBundle: false))
             }
             lines.append("")
         }
 
         lines.append("Interpretation:")
-        lines.append("- A sandbox token does not imply the directory can be opened.")
-        lines.append("- POSIX ownership restrictions still apply after a sandbox grant.")
-        lines.append("- An absent xattr is not proof of a successful three-app bypass.")
-        lines.append("- No changes to installed bundles, xattrs, ownership or signing were attempted.")
-        lines.append("Note: worse_query temporarily recreates Library/Caches inside Erosion's own App Group.")
+        lines.append("- Code -6 means a sandbox extension token was not returned.")
+        lines.append("- Trying alternate flags is diagnostic, not a guaranteed bypass.")
+        lines.append("- App bundle paths found by pathleak may still be inaccessible.")
+        lines.append("- A token does not imply that a directory can actually open.")
+        lines.append("- An absent xattr does not prove that the three-app limit was bypassed.")
+        lines.append("- Installed bundles, ownership, xattrs and signing were not modified.")
+        lines.append("Side effect: worse_query recreates Caches inside Erosion's own App Group.")
         return lines.joined(separator: "\n")
     }
 
@@ -138,20 +149,51 @@ private enum AppLimitInspector {
         return "denied (errno \(code): \(String(cString: strerror(code))))"
     }
 
-    private static func inspectBundleSamples(root: String) -> [String] {
-        var results: [String] = []
+    /// Request a sandbox extension in both supported modes. An issued token
+    /// is not treated as success unless an actual directory open succeeds.
+    /// Release the handle only after the open test.
+    private static func probe(path: String, group: String) -> (lines: [String], opened: Bool) {
+        var lines: [String] = []
+        let before = openStatus(path)
+        lines.append("Directory open BEFORE grant: \(before)")
 
+        if before == "opened" {
+            lines.append("Already accessible; sandbox query not needed.")
+            return (lines, true)
+        }
+
+        for (name, alternate) in [("standard", false), ("alternate", true)] {
+            let handle = worse_query(path, group, alternate, false)
+            let after = openStatus(path)
+            lines.append("\(name) flags: \(handle >= 0 ? "token issued" : "error \(handle)"); open: \(after)")
+            if handle >= 0 {
+                worse_query_release(handle)
+            }
+            if after == "opened" {
+                return (lines, true)
+            }
+        }
+        return (lines, false)
+    }
+
+    private static func inspectSamples(
+        root: String,
+        group: String,
+        maximum: Int,
+        inspectBundle: Bool
+    ) -> [String] {
+        var results: [String] = []
         let listed = (try? FileManager.default.contentsOfDirectory(atPath: root)) ?? []
         let paths: [String]
         if !listed.isEmpty {
-            results.append("Container discovery: directory listing")
+            results.append("Discovery: directory listing")
             paths = listed.map { root + "/" + $0 }
         } else {
-            results.append("Container discovery: pathleak fallback (may be slow)")
+            results.append("Discovery: pathleak fallback (may be slow)")
             paths = FSHandlers().getDirPaths(root)
         }
 
-        // Only immediate child containers are eligible. Never recurse into app data.
+        // Limit probes to immediate children. Do not include UUIDs in the report.
         let normalizedRoot = URL(fileURLWithPath: root).standardizedFileURL.path
         let containers = Array(Set(paths.map {
             URL(fileURLWithPath: $0).standardizedFileURL.path
@@ -161,30 +203,28 @@ private enum AppLimitInspector {
 
         results.append("Container candidates discovered: \(containers.count)")
         if containers.isEmpty {
-            results.append("No bundle containers accessible for a metadata sample.")
+            results.append("No candidates found; cannot infer container accessibility.")
             return results
         }
 
-        for (index, container) in containers.prefix(3).enumerated() {
-            let handle = worse_query(container, wq.getAppGroup(), false, false)
-            let containerStatus = openStatus(container)
-            results.append("Sample \(index + 1): token \(handle >= 0 ? "issued" : "error \(handle)"), directory \(containerStatus)")
+        for (index, container) in containers.prefix(maximum).enumerated() {
+            results.append("Sample \(index + 1):")
+            let access = probe(path: container, group: group)
+            results.append(contentsOf: access.lines.map { "  " + $0 })
 
+            guard inspectBundle && access.opened else { continue }
             if let names = try? FileManager.default.contentsOfDirectory(atPath: container),
                let appName = names.first(where: { $0.hasSuffix(".app") }) {
                 let appPath = container + "/" + appName
-                let appHandle = worse_query(appPath, wq.getAppGroup(), false, false)
-                results.append("  .app token: \(appHandle >= 0 ? "issued" : "error \(appHandle)")")
-                results.append("  \(bundleMetadata(at: appPath))")
-                if appHandle >= 0 {
-                    worse_query_release(appHandle)
+                let appAccess = probe(path: appPath, group: group)
+                results.append(contentsOf: appAccess.lines.map { "  .app " + $0 })
+                if appAccess.opened {
+                    results.append("  \(bundleMetadata(at: appPath))")
+                } else {
+                    results.append("  Bundle metadata not accessible.")
                 }
             } else {
-                results.append("  .app contents inaccessible or not found")
-            }
-
-            if handle >= 0 {
-                worse_query_release(handle)
+                results.append("  No .app directory could be enumerated.")
             }
         }
 
