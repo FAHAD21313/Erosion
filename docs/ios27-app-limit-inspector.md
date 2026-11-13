@@ -18,16 +18,16 @@ bundle identifiers, provisioning profile contents, and account credentials.
 ## What it measures
 
 - Whether an existing App Group container is available to Erosion.
-- Whether app bundle, app data, and internal daemon directory roots open before
-  and after requesting a `worse_query` sandbox extension.
-- Whether bundle containers can be discovered by directory listing or the
-  project's existing `pathleak` path enumeration routine.
+- Whether app bundle, app data, and internal daemon directory roots open before and after requesting sandbox extensions with both standard and alternate `worse_query` flags. The alternate mode is tried only if the first request does not grant usable directory access.
+- Whether app bundle and app data containers can be discovered by directory listing or the project's existing `pathleak` enumeration routine. It probes up to three bundle containers and two app-data containers individually, because a parent may be inaccessible even if its children are not.
 - For up to three sample app bundles, whether a sandbox token is issued,
   whether the container can actually be opened, the visible POSIX owner,
   whether `embedded.mobileprovision` is visible, and the *presence or
   absence* (not the value) of `com.apple.installd.validatedByFreeProfile`.
 
 ### How to read the results
+
+If you see `error -6`, `copy_sandbox_token` returned no extension token. This is not evidence that a valid extension was consumed and then denied; the diagnostic compares both supported query flag modes to distinguish cases.
 
 A token being issued **does not** mean that the target is readable or writable.
 A POSIX denial may remain even after a sandbox extension has been consumed.
@@ -45,9 +45,10 @@ the next research step is to characterize the boundary, not to assume a
 - No writes are performed to *installed app bundles*, extended attributes,
   provisioning profiles, ownership, or installation databases.
 - The existing `worse_query` implementation temporarily removes/recreates
-  `Library/Caches` **inside Erosion's own App Group** to request a sandbox
-  extension. This is an existing exploit side effect, so the scan is not
-  literally free of all local writes.
+  `Library/Caches` **inside Erosion's own App Group** on each sandbox query.
+  It may delete data cached there. This is an existing exploit side effect,
+  so the scan is not literally free of all local writes. Run only on a device
+  with a recent backup.
 - The project's `pathleak` helper creates and removes a small temporary file
   inside Erosion's own temporary directory.
 - No telemetry or automatic uploads are included. Sharing is user initiated.
@@ -68,3 +69,12 @@ Sources for the motivation:
 - [Lara's APFS ownership code](https://github.com/rooootdev/lara/blob/main/lara/kexploit/pe/apfs.m)
 - [WQ Files](https://github.com/kolbicz/WQFiles)
 - [worse_query](https://github.com/forcequitOS/worse_query)
+
+## iOS 27.0.1 findings (initial report, 2026-11-13)
+
+A first on-device report (build 24A446) showed an App Group container, 13 app
+bundle container paths discovered by `pathleak`, and `worse_query` code `-6`
+for all root and sampled bundle requests using standard flags. None of the
+app bundles opened. This **does not** establish whether an alternate flag or
+an individually targeted app-data container will work; the updated inspector
+now tests both variants. Do not claim that finding paths grants access.
