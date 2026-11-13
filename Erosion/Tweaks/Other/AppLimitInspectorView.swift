@@ -58,7 +58,7 @@ struct AppLimitInspectorView: View {
                 }
                 .disabled(isRunning || isClassifying || isMapping)
 
-                Text("Optional: checks identifiers on up to 35 daemon data containers. It may take time and causes repeated worse_query cache swaps inside Erosion's own App Group.")
+                Text("Optional: daemon identifiers and bounded nested metadata. Only counts and file extensions are reported; no contents. The probe recreates Erosion's App Group cache.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
@@ -134,7 +134,7 @@ private enum AppLimitInspector {
 
     static func generateReport() -> String {
         var lines: [String] = [
-            "Erosion / App Limit Inspector v5 (read-only)",
+            "Erosion / App Limit Inspector v6 (read-only)",
             "Date: \(ISO8601DateFormatter().string(from: Date()))",
             "OS: \(ProcessInfo.processInfo.operatingSystemVersionString)",
             "Build: \(buildNumber())",
@@ -424,7 +424,7 @@ private enum AppLimitInspector {
             "com.apple.lsd"
         ]
         var lines: [String] = [
-            "Erosion / Installer Data Metadata Map (read-only)",
+            "Erosion / Installer Data Metadata Map v6 (read-only)",
             "Date: \(ISO8601DateFormatter().string(from: Date()))",
             "OS: \(ProcessInfo.processInfo.operatingSystemVersionString)",
             "Scope: top-level filesystem metadata only; no file contents",
@@ -553,7 +553,104 @@ private enum AppLimitInspector {
                              "json \(jsonFiles), text/log \(logs), other \(otherFiles)")
             }
         }
+        lines.append(contentsOf: summarizeNestedMetadata(at: container))
         return lines
+    }
+
+
+    // Only metadata; never export real child paths or read file contents.
+    // Never traverse symlinked directories. Bounded time and output.
+    private static func summarizeNestedMetadata(at root: String) -> [String] {
+        struct Counts {
+            var dirs = 0
+            var files = 0
+            var db = 0
+            var plist = 0
+            var other = 0
+            var links = 0
+            var rootOwned = 0
+            var mobileOwned = 0
+            var otherOwned = 0
+        }
+        let maxDepth = 4
+        let maxDirectories = 50
+        let maxEntries = 750
+        var stats = Array(repeating: Counts(), count: maxDepth + 1)
+        var pending: [(path: String, depth: Int)] = [(root, 0)]
+        var position = 0
+        var visited = 0
+        var inspected = 0
+        var unreadable = 0
+        var errors = 0
+        var limited = false
+
+        while position < pending.count && visited < maxDirectories && inspected < maxEntries {
+            let current = pending[position]
+            position += 1
+            var parentStat = stat()
+            guard current.path.withCString({ lstat($0, &parentStat) }) == 0,
+                  (parentStat.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else {
+                errors += 1
+                continue
+            }
+            guard let children = try? FileManager.default.contentsOfDirectory(atPath: current.path) else {
+                unreadable += 1
+                continue
+            }
+            visited += 1
+            let capacity = min(120, maxEntries - inspected)
+            if children.count > capacity { limited = true }
+            for name in children.prefix(capacity) {
+                inspected += 1
+                let path = current.path + "/" + name
+                var itemStat = stat()
+                guard path.withCString({ lstat($0, &itemStat) }) == 0 else {
+                    errors += 1
+                    continue
+                }
+                let depth = current.depth + 1
+                let kind = itemStat.st_mode & mode_t(S_IFMT)
+                if itemStat.st_uid == 0 {
+                    stats[depth].rootOwned += 1
+                } else if itemStat.st_uid == 501 {
+                    stats[depth].mobileOwned += 1
+                } else {
+                    stats[depth].otherOwned += 1
+                }
+                if kind == mode_t(S_IFDIR) {
+                    stats[depth].dirs += 1
+                    if depth < maxDepth { pending.append((path, depth)) }
+                } else if kind == mode_t(S_IFLNK) {
+                    stats[depth].links += 1
+                } else if kind == mode_t(S_IFREG) {
+                    stats[depth].files += 1
+                    switch URL(fileURLWithPath: name).pathExtension.lowercased() {
+                    case "db", "sqlite", "sqlite3", "sqlite-wal", "sqlite-shm", "db-wal", "db-shm":
+                        stats[depth].db += 1
+                    case "plist":
+                        stats[depth].plist += 1
+                    default:
+                        stats[depth].other += 1
+                    }
+                }
+            }
+        }
+        if position < pending.count { limited = true }
+        var output = [
+            "  Bounded nested metadata (no names or contents):",
+            "    folders scanned \(visited); items checked \(inspected); unreadable \(unreadable), stat errors \(errors)"
+        ]
+        for level in 1...maxDepth {
+            let c = stats[level]
+            output.append(
+                "    depth \(level): dirs \(c.dirs), files \(c.files), db \(c.db), plist \(c.plist), " +
+                "other files \(c.other), symlinks \(c.links); UID 0 \(c.rootOwned), " +
+                "UID 501 \(c.mobileOwned), other UID \(c.otherOwned)"
+            )
+        }
+        output.append("    scan truncated: \(limited ? "yes" : "no")")
+        output.append("    metadata ownership does not prove write access or installer accounting authority")
+        return output
     }
 
     private static func bundleMetadata(at path: String) -> String {
