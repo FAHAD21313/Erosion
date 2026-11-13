@@ -1,0 +1,79 @@
+name: Build Erosion IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build unsigned iOS IPA
+    runs-on: macos-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Show Xcode and iOS SDK
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-version
+          xcodebuild -list -project Erosion.xcodeproj
+
+      - name: Build unsigned app
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project Erosion.xcodeproj \
+            -scheme Erosion \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$RUNNER_TEMP/DerivedData" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            build
+
+      - name: Package IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP="$RUNNER_TEMP/DerivedData/Build/Products/Release-iphoneos/Erosion.app"
+          test -d "$APP"
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          ditto "$APP" "$RUNNER_TEMP/ipa/Payload/Erosion.app"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/Erosion-unsigned.ipa" Payload)
+          unzip -l Erosion-unsigned.ipa | grep -F 'Payload/Erosion.app/Info.plist'
+          shasum -a 256 Erosion-unsigned.ipa
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Erosion-IPA-${{ github.run_number }}
+          path: Erosion-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish downloadable IPA in prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "ci-${GITHUB_RUN_NUMBER}" Erosion-unsigned.ipa \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Erosion IPA build #${GITHUB_RUN_NUMBER}" \
+            --notes "Automatically built from main at ${GITHUB_SHA}. This IPA is UNSIGNED. Use a trusted sideloading tool to sign with your own Apple ID/provisioning profile, keeping the required App Group entitlement. Not validated on an iOS 27 device." \
+            --prerelease
