@@ -13,7 +13,16 @@ import Darwin
 struct AppLimitInspectorView: View {
     @State private var isRunning = false
     @State private var isClassifying = false
-    @State private var report = ""
+    @State private var isMapping = false
+    @State private var diagnosticReport = ""
+    @State private var classificationReport = ""
+    @State private var mappingReport = ""
+
+    private var report: String {
+        [diagnosticReport, classificationReport, mappingReport]
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+    }
 
     var body: some View {
         List {
@@ -33,20 +42,27 @@ struct AppLimitInspectorView: View {
                 } label: {
                     Label(isRunning ? "Scanning…" : "Run Read-Only Scan", systemImage: "magnifyingglass")
                 }
-                .disabled(isRunning || isClassifying)
+                .disabled(isRunning || isClassifying || isMapping)
 
                 Button {
                     runClassification()
                 } label: {
                     Label(isClassifying ? "Classifying daemon containers…" : "Identify Daemon Containers (extended)", systemImage: "list.bullet.rectangle")
                 }
-                .disabled(isRunning || isClassifying)
+                .disabled(isRunning || isClassifying || isMapping)
+
+                Button {
+                    runMetadataMap()
+                } label: {
+                    Label(isMapping ? "Mapping installer metadata…" : "Map Installer Data Metadata", systemImage: "square.stack.3d.up")
+                }
+                .disabled(isRunning || isClassifying || isMapping)
 
                 Text("Optional: checks identifiers on up to 35 daemon data containers. It may take time and causes repeated worse_query cache swaps inside Erosion's own App Group.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
 
-                if isRunning || isClassifying {
+                if isRunning || isClassifying || isMapping {
                     ProgressView("Running read-only diagnostics…")
                 }
             } header: {
@@ -71,28 +87,41 @@ struct AppLimitInspectorView: View {
     }
 
     private func runScan() {
-        guard !isRunning && !isClassifying else { return }
+        guard !isRunning && !isClassifying && !isMapping else { return }
         isRunning = true
 
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 AppLimitInspector.generateReport()
             }.value
-            report = result
+            diagnosticReport = result
             isRunning = false
         }
     }
 
     private func runClassification() {
-        guard !isRunning && !isClassifying else { return }
+        guard !isRunning && !isClassifying && !isMapping else { return }
         isClassifying = true
 
         Task {
             let result = await Task.detached(priority: .userInitiated) {
                 AppLimitInspector.classifyDaemonContainers()
             }.value
-            report = report.isEmpty ? result : report + "\n\n" + result
+            classificationReport = result
             isClassifying = false
+        }
+    }
+
+    private func runMetadataMap() {
+        guard !isRunning && !isClassifying && !isMapping else { return }
+        isMapping = true
+
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                AppLimitInspector.mapInstallerDataMetadata()
+            }.value
+            mappingReport = result
+            isMapping = false
         }
     }
 }
@@ -105,7 +134,7 @@ private enum AppLimitInspector {
 
     static func generateReport() -> String {
         var lines: [String] = [
-            "Erosion / App Limit Inspector v4 (read-only)",
+            "Erosion / App Limit Inspector v5 (read-only)",
             "Date: \(ISO8601DateFormatter().string(from: Date()))",
             "OS: \(ProcessInfo.processInfo.operatingSystemVersionString)",
             "Build: \(buildNumber())",
@@ -383,6 +412,148 @@ private enum AppLimitInspector {
             (byte >= 48 && byte <= 57) || byte == 46 || byte == 45 || byte == 95
         }
         return acceptable ? identifier : nil
+    }
+
+    /// Opt-in metadata map. Lists only fixed, well-known relative directories
+    /// of three Apple service data containers; no file names, values, or
+    /// contents are exported or changed.
+    static func mapInstallerDataMetadata() -> String {
+        let services = [
+            "com.apple.installd",
+            "com.apple.installcoordinationd",
+            "com.apple.lsd"
+        ]
+        var lines: [String] = [
+            "Erosion / Installer Data Metadata Map (read-only)",
+            "Date: \(ISO8601DateFormatter().string(from: Date()))",
+            "OS: \(ProcessInfo.processInfo.operatingSystemVersionString)",
+            "Scope: top-level filesystem metadata only; no file contents",
+            ""
+        ]
+        let appGroup = wq.getAppGroup()
+        guard FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) != nil else {
+            lines.append("App Group unavailable; cannot scan.")
+            return lines.joined(separator: "\n")
+        }
+
+        let listed = (try? FileManager.default.contentsOfDirectory(atPath: daemonRoot))?.map {
+            daemonRoot + "/" + $0
+        } ?? FSHandlers().getDirPaths(daemonRoot)
+        let normalizedRoot = URL(fileURLWithPath: daemonRoot).standardizedFileURL.path
+        let containers = Array(Set(listed.map {
+            URL(fileURLWithPath: $0).standardizedFileURL.path
+        }.filter {
+            URL(fileURLWithPath: $0).deletingLastPathComponent().path == normalizedRoot
+        })).sorted()
+        lines.append("Daemon candidates discovered: \(containers.count)")
+
+        var found = Set<String>()
+        for container in containers.prefix(45) {
+            if found.count == services.count { break }
+            let access = probe(path: container, group: appGroup)
+            if access.opened,
+               let identifier = containerIdentifier(path: container),
+               services.contains(identifier) {
+                found.insert(identifier)
+                lines.append("")
+                lines.append("[\(identifier)]")
+                lines.append("Data container: opened")
+                lines.append(contentsOf: describeMetadata(at: container))
+            }
+            if let handle = access.handle {
+                worse_query_release(handle)
+            }
+        }
+
+        for missing in services where !found.contains(missing) {
+            lines.append("")
+            lines.append("[\(missing)]")
+            lines.append("Not found or not accessible in scanned containers.")
+        }
+
+        lines.append("")
+        lines.append("Limitations:")
+        lines.append("- Only immediate entries in fixed directories were classified.")
+        lines.append("- Directory totals do not reveal whether an installation database is used.")
+        lines.append("- No protected app bundles or app identifiers were accessed.")
+        lines.append("- No file contents were read, and no modification was attempted.")
+        lines.append("- Access to daemon data is not control of the daemon process.")
+        lines.append("- worse_query recreates Caches in Erosion's own App Group.")
+        return lines.joined(separator: "\n")
+    }
+
+    private static func describeMetadata(at container: String) -> [String] {
+        let fixedDirectories = [
+            ("root", ""),
+            ("Library", "Library"),
+            ("Caches", "Library/Caches"),
+            ("Preferences", "Library/Preferences"),
+            ("Application Support", "Library/Application Support"),
+            ("Databases", "Library/Databases"),
+            ("Documents", "Documents"),
+            ("tmp", "tmp")
+        ]
+
+        var lines: [String] = []
+        for (label, relative) in fixedDirectories {
+            let path = relative.isEmpty ? container : container + "/" + relative
+            guard let entries = try? FileManager.default.contentsOfDirectory(atPath: path) else {
+                lines.append("  \(label): absent or inaccessible")
+                continue
+            }
+
+            var directories = 0
+            var regular = 0
+            var links = 0
+            var unclassified = 0
+            var databases = 0
+            var propertyLists = 0
+            var jsonFiles = 0
+            var logs = 0
+            var otherFiles = 0
+            let inspected = entries.prefix(150)
+
+            for entry in inspected {
+                let item = path + "/" + entry
+                var info = stat()
+                guard item.withCString({ lstat($0, &info) }) == 0 else {
+                    unclassified += 1
+                    continue
+                }
+
+                let kind = info.st_mode & mode_t(S_IFMT)
+                if kind == mode_t(S_IFDIR) {
+                    directories += 1
+                } else if kind == mode_t(S_IFLNK) {
+                    links += 1
+                } else if kind == mode_t(S_IFREG) {
+                    regular += 1
+                    let ext = URL(fileURLWithPath: item).pathExtension.lowercased()
+                    switch ext {
+                    case "sqlite", "sqlite3", "db", "db-wal", "db-shm", "sqlite-wal", "sqlite-shm":
+                        databases += 1
+                    case "plist":
+                        propertyLists += 1
+                    case "json":
+                        jsonFiles += 1
+                    case "log", "txt":
+                        logs += 1
+                    default:
+                        otherFiles += 1
+                    }
+                } else {
+                    unclassified += 1
+                }
+            }
+
+            lines.append("  \(label): \(entries.count) entries, \(inspected.count) checked; " +
+                         "dirs \(directories), files \(regular), links \(links), other \(unclassified)")
+            if regular > 0 {
+                lines.append("    file types: database \(databases), plist \(propertyLists), " +
+                             "json \(jsonFiles), text/log \(logs), other \(otherFiles)")
+            }
+        }
+        return lines
     }
 
     private static func bundleMetadata(at path: String) -> String {
