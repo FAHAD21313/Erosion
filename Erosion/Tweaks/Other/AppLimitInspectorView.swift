@@ -12,6 +12,7 @@ import Darwin
 
 struct AppLimitInspectorView: View {
     @State private var isRunning = false
+    @State private var isClassifying = false
     @State private var report = ""
 
     var body: some View {
@@ -32,10 +33,21 @@ struct AppLimitInspectorView: View {
                 } label: {
                     Label(isRunning ? "Scanning…" : "Run Read-Only Scan", systemImage: "magnifyingglass")
                 }
-                .disabled(isRunning)
+                .disabled(isRunning || isClassifying)
 
-                if isRunning {
-                    ProgressView("Testing paths and locating sample bundles…")
+                Button {
+                    runClassification()
+                } label: {
+                    Label(isClassifying ? "Classifying daemon containers…" : "Identify Daemon Containers (extended)", systemImage: "list.bullet.rectangle")
+                }
+                .disabled(isRunning || isClassifying)
+
+                Text("Optional: checks identifiers on up to 35 daemon data containers. It may take time and causes repeated worse_query cache swaps inside Erosion's own App Group.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                if isRunning || isClassifying {
+                    ProgressView("Running read-only diagnostics…")
                 }
             } header: {
                 HeaderLabel("Diagnostics", symbol: "stethoscope")
@@ -59,7 +71,7 @@ struct AppLimitInspectorView: View {
     }
 
     private func runScan() {
-        guard !isRunning else { return }
+        guard !isRunning && !isClassifying else { return }
         isRunning = true
 
         Task {
@@ -68,6 +80,19 @@ struct AppLimitInspectorView: View {
             }.value
             report = result
             isRunning = false
+        }
+    }
+
+    private func runClassification() {
+        guard !isRunning && !isClassifying else { return }
+        isClassifying = true
+
+        Task {
+            let result = await Task.detached(priority: .userInitiated) {
+                AppLimitInspector.classifyDaemonContainers()
+            }.value
+            report = report.isEmpty ? result : report + "\n\n" + result
+            isClassifying = false
         }
     }
 }
@@ -80,7 +105,7 @@ private enum AppLimitInspector {
 
     static func generateReport() -> String {
         var lines: [String] = [
-            "Erosion / App Limit Inspector v3 (read-only)",
+            "Erosion / App Limit Inspector v4 (read-only)",
             "Date: \(ISO8601DateFormatter().string(from: Date()))",
             "OS: \(ProcessInfo.processInfo.operatingSystemVersionString)",
             "Build: \(buildNumber())",
@@ -247,6 +272,117 @@ private enum AppLimitInspector {
         }
 
         return results
+    }
+
+    /// Extended, opt-in scan of daemon DATA containers. No app files,
+    /// installation records, or arbitrary daemon file contents are read.
+    static func classifyDaemonContainers() -> String {
+        var lines: [String] = [
+            "Erosion / InternalDaemon Classification (read-only)",
+            "Date: \(ISO8601DateFormatter().string(from: Date()))",
+            "OS: \(ProcessInfo.processInfo.operatingSystemVersionString)",
+            "Scope: daemon container metadata only (up to 35 candidates)",
+            ""
+        ]
+        let appGroup = wq.getAppGroup()
+        guard FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroup) != nil else {
+            lines.append("App Group unavailable; scan not started.")
+            return lines.joined(separator: "\n")
+        }
+
+        let root = daemonRoot
+        let paths: [String]
+        if let listed = try? FileManager.default.contentsOfDirectory(atPath: root) {
+            paths = listed.map { root + "/" + $0 }
+            lines.append("Discovery method: directory listing")
+        } else {
+            paths = FSHandlers().getDirPaths(root)
+            lines.append("Discovery method: pathleak")
+        }
+
+        let normalizedRoot = URL(fileURLWithPath: root).standardizedFileURL.path
+        let children = Array(Set(paths.map {
+            URL(fileURLWithPath: $0).standardizedFileURL.path
+        }.filter {
+            URL(fileURLWithPath: $0).deletingLastPathComponent().path == normalizedRoot
+        })).sorted()
+        let sample = Array(children.prefix(35))
+        lines.append("Candidates found: \(children.count)")
+        lines.append("Candidates scanned: \(sample.count)")
+
+        var accessible = 0
+        var labeled = 0
+        var appleLabels = 0
+        var rootOwned = 0
+        var mobileOwned = 0
+        var otherOwned = 0
+        var relevant: [String] = []
+        let installerKeywords = ["installd", "install", "appstored", "appstore", "launchservices", "mobilecontainer", "lsd"]
+
+        for container in sample {
+            let result = probe(path: container, group: appGroup)
+            if result.opened {
+                accessible += 1
+                var itemStat = stat()
+                if container.withCString({ lstat($0, &itemStat) }) == 0 {
+                    if itemStat.st_uid == 0 {
+                        rootOwned += 1
+                    } else if itemStat.st_uid == 501 {
+                        mobileOwned += 1
+                    } else {
+                        otherOwned += 1
+                    }
+                }
+
+                if let identifier = containerIdentifier(path: container) {
+                    labeled += 1
+                    if identifier.hasPrefix("com.apple.") {
+                        appleLabels += 1
+                        let lowered = identifier.lowercased()
+                        if installerKeywords.contains(where: { lowered.contains($0) }) {
+                            // Only Apple service labels; never UUIDs or application IDs.
+                            relevant.append(identifier)
+                        }
+                    }
+                }
+            }
+            if let handle = result.handle {
+                worse_query_release(handle)
+            }
+        }
+
+        lines.append("Containers opened: \(accessible) / \(sample.count)")
+        lines.append("Readable container identifiers: \(labeled)")
+        lines.append("Apple service identifiers: \(appleLabels)")
+        lines.append("Owner UID 0 (root): \(rootOwned)")
+        lines.append("Owner UID 501 (mobile): \(mobileOwned)")
+        lines.append("Other owners: \(otherOwned)")
+        lines.append("Installer-related Apple identifier matches: \(relevant.count)")
+        for identifier in Set(relevant).sorted() {
+            lines.append("  Apple service: \(identifier)")
+        }
+        lines.append("")
+        lines.append("Limitations:")
+        lines.append("- InternalDaemon DATA access is not access to the installd process.")
+        lines.append("- A matching name is only an identifier clue, not proof of any control.")
+        lines.append("- No matching identifiers does not prove installer state is absent.")
+        lines.append("- No app bundles, signing, xattrs or installation data were modified.")
+        lines.append("- Token queries recreate Caches in Erosion's own App Group.")
+        return lines.joined(separator: "\n")
+    }
+
+    private static func containerIdentifier(path: String) -> String? {
+        var buffer = [CChar](repeating: 0, count: 512)
+        let count = getxattr(path, "com.apple.containermanager.identifier", &buffer, 511, 0, 0)
+        guard count > 0 && count <= 511 else { return nil }
+        buffer[Int(count)] = 0
+        guard let identifier = String(validatingUTF8: buffer), !identifier.isEmpty else { return nil }
+        // Prevent arbitrary strings from appearing in the exported report.
+        let acceptable = identifier.utf8.allSatisfy { byte in
+            (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) ||
+            (byte >= 48 && byte <= 57) || byte == 46 || byte == 45 || byte == 95
+        }
+        return acceptable ? identifier : nil
     }
 
     private static func bundleMetadata(at path: String) -> String {
