@@ -10,7 +10,8 @@ free Apple Developer account's three-installed-app limit.
 2. Open **Tweaks → System → App Limit Inspector (iOS 27)**.
 3. Select **Run Read-Only Scan** for the standard permission test. Bundle discovery via `pathleak` may take time.
 4. Optionally select **Identify Daemon Containers (extended)**. This probes up to 35 individual daemon data containers and reads only container metadata (owner UID and `com.apple.containermanager.identifier`), reporting totals and Apple identifiers whose names appear installation-related. This is an opt-in extended scan; it can trigger repeated App Group cache swaps.
-5. Share the displayed report manually if you want to compare results across iOS versions.
+5. Optionally select **Map Installer Data Metadata** (v5). This discovers the data containers of three known Apple services and summarizes entries in a handful of standard directories. It counts directories, regular files and files by extension **without exporting filenames, UUIDs, file values or contents**. This diagnostic also runs sandbox queries and can affect Erosion's App Group caches.
+6. Share the displayed report manually if you want to compare results across iOS versions.
 
 The report contains OS/build metadata, fixed filesystem paths, and anonymized
 sample numbers. It intentionally omits App Group IDs, container UUIDs, app names,
@@ -108,3 +109,40 @@ open or parse installation databases, request service actions, remove xattrs,
 or change code-signing state. A matching identifier cannot establish a
 bypass: there is no verified route from daemon data access to changing
 Apple's free-profile installation accounting.
+
+## iOS 27.0.1 fourth report (2026-11-13, build 24A446)
+
+On-device v4 opt-in classification found **30** InternalDaemon candidates and
+successfully opened **30/30**. All 30 container identifiers were readable and
+began `com.apple.`; all 30 folders were owned by UID 501 (`mobile`), not
+UID 0 (`root`). Three identifiers matched the install-related filter:
+
+- `com.apple.installcoordinationd`
+- `com.apple.installd`
+- `com.apple.lsd`
+
+This is the first confirmed observation that some **individual data
+containers for installer-related services** are accessible through
+`worse_query` on this iOS build. It does **not** mean the installer
+process or its XPC interface is accessible, that its installation database
+resides within these directories, or that any user-visible free-profile
+app-count limit can be changed. Protected App Bundle paths remain blocked.
+
+## v5: opt-in metadata surface map
+
+To avoid reading private user or app data, **Map Installer Data Metadata**
+collects directory entry counts and **extension categories only** from a
+fixed set of top-level paths within those three known service data containers
+(`root`, `Library`, `Library/Caches`, `Library/Preferences`, `Library/Application Support`,
+`Library/Databases`, `Documents`, and `tmp`). Individual file names,
+container UUIDs, Apple account details, signing data and file contents are
+not read or exported. A maximum of 150 entries per path are classified.
+
+The report distinguishes absent/inaccessible paths from directory counts,
+but cannot prove whether an installer cache is authoritative or whether a
+file would be writable. No files outside Erosion's own App Group are changed;
+the underlying `worse_query` cache-swap behavior is unchanged.
+
+In v5, each diagnostic action retains its own report section, so running
+classification or mapping again **replaces only that section** instead of
+appending duplicated reports.
