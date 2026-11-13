@@ -19,6 +19,9 @@ struct AppLimitInspectorView: View {
             Section {
                 Text("Research tool for the free developer account's three-app limit on iOS 27.")
                 Text("Checks sandbox access, bundle directory visibility, ownership and a provisioning-related extended attribute. It does not bypass the limit or modify installed apps.")
+                Text("The worse_query probe temporarily recreates the cache directory in this app’s own App Group.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             } header: {
@@ -81,7 +84,7 @@ private enum AppLimitInspector {
         var lines: [String] = [
             "Erosion / App Limit Inspector (read-only)",
             "Date: \(ISO8601DateFormatter().string(from: Date()))",
-            "OS: \(UIDevice.current.systemName) \(UIDevice.current.systemVersion)",
+            "OS: \(ProcessInfo.processInfo.operatingSystemVersionString)",
             "Build: \(buildNumber())",
             "Test: iOS 27 sandbox and installed-bundle metadata",
             ""
