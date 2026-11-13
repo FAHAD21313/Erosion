@@ -80,7 +80,7 @@ private enum AppLimitInspector {
 
     static func generateReport() -> String {
         var lines: [String] = [
-            "Erosion / App Limit Inspector v2 (read-only)",
+            "Erosion / App Limit Inspector v3 (read-only)",
             "Date: \(ISO8601DateFormatter().string(from: Date()))",
             "OS: \(ProcessInfo.processInfo.operatingSystemVersionString)",
             "Build: \(buildNumber())",
@@ -124,6 +124,13 @@ private enum AppLimitInspector {
                                                         group: appGroup,
                                                         maximum: 2,
                                                         inspectBundle: false))
+            } else if path == daemonRoot {
+                // As with app data, test actual daemon-container children;
+                // a failed query for the parent is not a conclusive result.
+                lines.append(contentsOf: inspectSamples(root: path,
+                                                        group: appGroup,
+                                                        maximum: 3,
+                                                        inspectBundle: false))
             }
             if let handle = result.handle {
                 worse_query_release(handle)
@@ -135,6 +142,7 @@ private enum AppLimitInspector {
         lines.append("- Code -6 means a sandbox extension token was not returned.")
         lines.append("- Trying alternate flags is diagnostic, not a guaranteed bypass.")
         lines.append("- App bundle paths found by pathleak may still be inaccessible.")
+        lines.append("- Access to individual daemon data containers does not imply installd access.")
         lines.append("- A token does not imply that a directory can actually open.")
         lines.append("- An absent xattr does not prove that the three-app limit was bypassed.")
         lines.append("- Installed bundles, ownership, xattrs and signing were not modified.")
