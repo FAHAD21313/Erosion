@@ -146,3 +146,39 @@ the underlying `worse_query` cache-swap behavior is unchanged.
 In v5, each diagnostic action retains its own report section, so running
 classification or mapping again **replaces only that section** instead of
 appending duplicated reports.
+
+## iOS 27.0.1 v5 report (2026-11-13, build 24A446)
+
+The first metadata-map report confirmed access to data containers for
+`com.apple.installd`, `com.apple.installcoordinationd`, and `com.apple.lsd`.
+In the fixed locations tested:
+
+- `installd`: root contained four directories and one plist; `Library` had
+  three directories and `Library/Caches` had one directory, without an
+  immediately visible database file.
+- `installcoordinationd`: no direct database files were observed in
+  the selected locations.
+- `lsd`: `Library/Caches` contained eight entries, including one
+  database-extension file and two plists.
+
+The likely role of the `lsd` cache is LaunchServices indexing;
+**nothing observed ties it to Apple's free-profile app count**. This report
+does not prove that the service containers' contents are writable or
+authoritative. Absence of a database at depth one does not rule out data
+under nested directories.
+
+## v6: bounded nested metadata census
+
+The existing **Map Installer Data Metadata** button also emits one
+aggregated per-depth census for each of those three service containers.
+The census examines at most **four levels**, **50 directory listings**,
+**750 directory entries total**, and **120 entries per directory**. It
+reports counts of directory entries by type, database/plist extensions,
+symlinks and owner UID, as well as truncation and access errors.
+
+No directory names, file names, UUIDs, installation records, database
+schema, signing data or file contents are included. Symlink directories
+are not followed. The scan never mutates daemon data, but the underlying
+`worse_query` still recreates Erosion's own App Group cache directory.
+User-account UID 501 is not evidence of effective write access. This is
+an exploratory surface map, **not a bypass**.
