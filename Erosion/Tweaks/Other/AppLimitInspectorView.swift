@@ -125,6 +125,9 @@ private enum AppLimitInspector {
                                                         maximum: 2,
                                                         inspectBundle: false))
             }
+            if let handle = result.handle {
+                worse_query_release(handle)
+            }
             lines.append("")
         }
 
@@ -152,28 +155,29 @@ private enum AppLimitInspector {
     /// Request a sandbox extension in both supported modes. An issued token
     /// is not treated as success unless an actual directory open succeeds.
     /// Release the handle only after the open test.
-    private static func probe(path: String, group: String) -> (lines: [String], opened: Bool) {
+    private static func probe(path: String, group: String) -> (lines: [String], opened: Bool, handle: Int64?) {
         var lines: [String] = []
         let before = openStatus(path)
         lines.append("Directory open BEFORE grant: \(before)")
 
         if before == "opened" {
             lines.append("Already accessible; sandbox query not needed.")
-            return (lines, true)
+            return (lines, true, nil)
         }
 
         for (name, alternate) in [("standard", false), ("alternate", true)] {
             let handle = worse_query(path, group, alternate, false)
             let after = openStatus(path)
             lines.append("\(name) flags: \(handle >= 0 ? "token issued" : "error \(handle)"); open: \(after)")
+            if after == "opened" {
+                // Keep the sandbox grant alive for callers reading directory contents.
+                return (lines, true, handle >= 0 ? handle : nil)
+            }
             if handle >= 0 {
                 worse_query_release(handle)
             }
-            if after == "opened" {
-                return (lines, true)
-            }
         }
-        return (lines, false)
+        return (lines, false, nil)
     }
 
     private static func inspectSamples(
@@ -212,8 +216,8 @@ private enum AppLimitInspector {
             let access = probe(path: container, group: group)
             results.append(contentsOf: access.lines.map { "  " + $0 })
 
-            guard inspectBundle && access.opened else { continue }
-            if let names = try? FileManager.default.contentsOfDirectory(atPath: container),
+            if inspectBundle && access.opened,
+               let names = try? FileManager.default.contentsOfDirectory(atPath: container),
                let appName = names.first(where: { $0.hasSuffix(".app") }) {
                 let appPath = container + "/" + appName
                 let appAccess = probe(path: appPath, group: group)
@@ -223,8 +227,14 @@ private enum AppLimitInspector {
                 } else {
                     results.append("  Bundle metadata not accessible.")
                 }
-            } else {
+                if let handle = appAccess.handle {
+                    worse_query_release(handle)
+                }
+            } else if inspectBundle {
                 results.append("  No .app directory could be enumerated.")
+            }
+            if let handle = access.handle {
+                worse_query_release(handle)
             }
         }
 
